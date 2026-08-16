@@ -142,6 +142,9 @@ func (s *Server) routeDeviceAPI(w http.ResponseWriter, r *http.Request) bool {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"data": s.dashboardDevices()})
 		return true
+	case "dashboard/host":
+		s.handleDashboardHost(w, r)
+		return true
 	case "devices":
 		return s.handleDevices(w, r)
 	case "devices/discovered":
@@ -387,6 +390,7 @@ func (s *Server) handleDiscoveredDevices(w http.ResponseWriter, r *http.Request)
 		result = append(result, map[string]any{
 			"hardware_kind":   candidate.HardwareKind,
 			"reader_name":     candidate.ReaderName,
+			"device_type":     discoveredDeviceType(candidate),
 			"discovery_key":   entry.ID,
 			"control_path":    controlPath,
 			"net_interface":   candidate.NetworkInterface,
@@ -1686,56 +1690,60 @@ func storedVoWiFiRuntime(runtime store.VoWiFiRuntime) map[string]any {
 	enabled, _ := extra["enabled"].(bool)
 	active, _ := extra["active"].(bool)
 	return map[string]any{
-		"device_id":           runtime.DeviceID,
-		"phase":               runtime.Phase,
-		"enabled":             enabled,
-		"active":              active,
-		"dataplane_mode":      runtime.DataplaneMode,
-		"iccid":               runtime.ICCID,
-		"imsi":                runtime.IMSI,
-		"sim_ready":           runtime.SIMReady,
-		"access_ready":        runtime.AccessReady,
-		"tunnel_ready":        runtime.TunnelReady,
-		"ims_ready":           runtime.IMSReady,
-		"sms_ready":           runtime.SMSReady,
-		"reg_status":          runtime.RegStatus,
-		"reg_status_text":     runtime.RegStatusText,
-		"network_mode":        runtime.NetworkMode,
-		"local_phone":         runtime.LocalPhone,
-		"phone_number_source": runtime.PhoneNumberSource,
-		"last_error_class":    runtime.LastErrorClass,
-		"last_error":          runtime.LastError,
-		"last_reason":         runtime.LastReason,
-		"updated_at":          runtime.UpdatedAt,
-		"tunnel":              rawJSONObject(runtime.Tunnel),
-		"imscore":             rawJSONObject(runtime.IMSCore),
-		"smsip":               rawJSONObject(runtime.SMSIP),
+		"device_id":            runtime.DeviceID,
+		"phase":                runtime.Phase,
+		"enabled":              enabled,
+		"active":               active,
+		"carrier_profile":      extra["carrier_profile"],
+		"carrier_profile_from": extra["carrier_profile_from"],
+		"dataplane_mode":       runtime.DataplaneMode,
+		"iccid":                runtime.ICCID,
+		"imsi":                 runtime.IMSI,
+		"sim_ready":            runtime.SIMReady,
+		"access_ready":         runtime.AccessReady,
+		"tunnel_ready":         runtime.TunnelReady,
+		"ims_ready":            runtime.IMSReady,
+		"sms_ready":            runtime.SMSReady,
+		"reg_status":           runtime.RegStatus,
+		"reg_status_text":      runtime.RegStatusText,
+		"network_mode":         runtime.NetworkMode,
+		"local_phone":          runtime.LocalPhone,
+		"phone_number_source":  runtime.PhoneNumberSource,
+		"last_error_class":     runtime.LastErrorClass,
+		"last_error":           runtime.LastError,
+		"last_reason":          runtime.LastReason,
+		"updated_at":           runtime.UpdatedAt,
+		"tunnel":               rawJSONObject(runtime.Tunnel),
+		"imscore":              rawJSONObject(runtime.IMSCore),
+		"smsip":                rawJSONObject(runtime.SMSIP),
 	}
 }
 
 func liveVoWiFiRuntime(runtime vowifi.State) map[string]any {
 	return map[string]any{
-		"device_id":           runtime.DeviceID,
-		"phase":               string(runtime.Phase),
-		"enabled":             runtime.Enabled,
-		"active":              runtime.Active,
-		"dataplane_mode":      runtime.DataplaneMode,
-		"iccid":               runtime.ICCID,
-		"imsi":                runtime.IMSI,
-		"sim_ready":           runtime.SIMReady,
-		"access_ready":        runtime.AccessReady,
-		"tunnel_ready":        runtime.TunnelReady,
-		"ims_ready":           runtime.IMSReady,
-		"sms_ready":           runtime.SMSReady,
-		"reg_status":          map[bool]int{true: 1, false: 0}[runtime.IMSReady],
-		"reg_status_text":     map[bool]string{true: "registered", false: "not registered"}[runtime.IMSReady],
-		"network_mode":        "Wi-Fi",
-		"local_phone":         runtime.PhoneNumber,
-		"phone_number_source": runtime.PhoneNumberSource,
-		"last_error_class":    runtime.LastErrorClass,
-		"last_error":          runtime.LastError,
-		"last_reason":         runtime.LastReason,
-		"updated_at":          runtime.UpdatedAt,
+		"device_id":            runtime.DeviceID,
+		"phase":                string(runtime.Phase),
+		"enabled":              runtime.Enabled,
+		"active":               runtime.Active,
+		"carrier_profile":      runtime.CarrierProfile,
+		"carrier_profile_from": runtime.CarrierProfileFrom,
+		"dataplane_mode":       runtime.DataplaneMode,
+		"iccid":                runtime.ICCID,
+		"imsi":                 runtime.IMSI,
+		"sim_ready":            runtime.SIMReady,
+		"access_ready":         runtime.AccessReady,
+		"tunnel_ready":         runtime.TunnelReady,
+		"ims_ready":            runtime.IMSReady,
+		"sms_ready":            runtime.SMSReady,
+		"reg_status":           map[bool]int{true: 1, false: 0}[runtime.IMSReady],
+		"reg_status_text":      map[bool]string{true: "registered", false: "not registered"}[runtime.IMSReady],
+		"network_mode":         "Wi-Fi",
+		"local_phone":          runtime.PhoneNumber,
+		"phone_number_source":  runtime.PhoneNumberSource,
+		"last_error_class":     runtime.LastErrorClass,
+		"last_error":           runtime.LastError,
+		"last_reason":          runtime.LastReason,
+		"updated_at":           runtime.UpdatedAt,
 		"tunnel": map[string]any{
 			"established":    runtime.TunnelReady,
 			"name":           runtime.TunnelName,
@@ -1909,6 +1917,8 @@ func fillConfigFromPhysical(config *store.Device, entry device.Device) {
 		config.NetworkEnabled = false
 		config.SMSEnabled = true
 		config.VoWiFiEnabled = true
+	} else if modem.IsDJI4GUSB(candidate.VendorID, candidate.ProductID) {
+		config.DeviceType = store.DeviceTypeDJI4G
 	}
 	if config.Interface == "" {
 		config.Interface = candidate.NetworkInterface
@@ -1931,6 +1941,16 @@ func fillConfigFromPhysical(config *store.Device, entry device.Device) {
 	if config.ESIMTransport == "" {
 		config.ESIMTransport = config.DeviceBackend
 	}
+}
+
+func discoveredDeviceType(candidate modem.Candidate) string {
+	if candidate.HardwareKind == "pcsc" {
+		return store.DeviceTypeUSBSIMReader
+	}
+	if modem.IsDJI4GUSB(candidate.VendorID, candidate.ProductID) {
+		return store.DeviceTypeDJI4G
+	}
+	return ""
 }
 
 func modemSummary(snapshot *device.Snapshot, phone string, phoneSource string) map[string]any {
