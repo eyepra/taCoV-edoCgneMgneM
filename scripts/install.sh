@@ -3,9 +3,9 @@
 # vocat install / update script for systemd and OpenWrt/procd deployments.
 #
 # Usage:
-#   bash install.sh [version]             # run directly when already root
-#   sudo bash install.sh [version]        # run through sudo as a normal user
-#   bash install.sh --check-env           # check VoWiFi host prerequisites
+#   bash install.sh [--check-env] [--skip-vowifi-check] [version]       # run directly when already root
+#   sudo bash install.sh [--check-env] [--skip-vowifi-check] [version]  # run through sudo as a normal user
+#   bash install.sh --check-env                                           # check VoWiFi host prerequisites
 #
 # Behavior:
 #   - Prompts for script language (中文 / English) as soon as it runs.
@@ -203,9 +203,14 @@ install_qmi_support() {
 
     if is_openwrt && command -v opkg >/dev/null 2>&1; then
         opkg update >/dev/null 2>&1 || true
-        if opkg_has_package libqmi; then
-            opkg install libqmi >/dev/null 2>&1 || true
+        local pkgs=""
+        opkg_has_package qmi-utils && pkgs="$pkgs qmi-utils"
+        opkg_has_package libqmi && pkgs="$pkgs libqmi"
+        if [ -z "$pkgs" ]; then
+            pkgs="qmi-utils libqmi"
         fi
+        # shellcheck disable=SC2086
+        opkg install $pkgs >/dev/null 2>&1 || true
     elif command -v apt-get >/dev/null 2>&1; then
         apt-get update -qq || true
         DEBIAN_FRONTEND=noninteractive apt-get install -y libqmi-utils || true
@@ -236,6 +241,7 @@ install_pcsc_support() {
         local packages=""
         opkg_has_package pcscd && packages="$packages pcscd"
         opkg_has_package ccid && packages="$packages ccid"
+        opkg_has_package libccid && packages="$packages libccid"
         if [ -n "$packages" ]; then
             # shellcheck disable=SC2086
             opkg install $packages >/dev/null 2>&1 && installed=1 || true
@@ -296,8 +302,8 @@ check_vowifi_environment() {
             "The OpenWrt/Kwrt kernel $(uname -r) lacks NETLINK_XFRM and its feed has no matching kmod-ipsec. Use a firmware built with matching kmod-ipsec, kmod-ipsec4/6, crypto-authenc, CBC, AES and SHA1 modules. Never force kmods from another kernel. Use --skip-vowifi-check only for non-VoWiFi operation."
     fi
     die \
-        "当前 Linux 内核不支持 XFRM/IPsec，VoWiFi IMS 无法工作。请启用 CONFIG_XFRM、CONFIG_XFRM_USER、CONFIG_INET_ESP、CONFIG_INET6_ESP、AES-CBC 和 HMAC-SHA1。" \
-        "This Linux kernel lacks XFRM/IPsec required by VoWiFi IMS. Enable CONFIG_XFRM, CONFIG_XFRM_USER, CONFIG_INET_ESP, CONFIG_INET6_ESP, AES-CBC and HMAC-SHA1."
+        "当前 Linux 内核不支持 XFRM/IPsec，VoWiFi IMS 无法工作。请启用 CONFIG_XFRM、CONFIG_XFRM_USER、CONFIG_INET_ESP、CONFIG_INET6_ESP、AES-CBC 和 HMAC-SHA1；若仅使用非 VoWiFi 功能（蜂窝短信/数据等），可重新运行安装脚本并加 --skip-vowifi-check。" \
+        "This Linux kernel lacks XFRM/IPsec required by VoWiFi IMS. Enable CONFIG_XFRM, CONFIG_XFRM_USER, CONFIG_INET_ESP, CONFIG_INET6_ESP, AES-CBC and HMAC-SHA1; or re-run with --skip-vowifi-check if you only need non-VoWiFi features (cellular SMS/data)."
 }
 
 # --- Skip if already installed at the same version ---------------------------
@@ -363,7 +369,7 @@ download_and_verify() {
     [ "$actual" = "$expected" ] || die "SHA-256 校验失败。" "SHA-256 verification failed."
     chmod 0755 "${VOCAT_TMP}/vocat"
     "${VOCAT_TMP}/vocat" version >/dev/null 2>&1 || die \
-        "Downloaded binary cannot run on this system; keeping the installed version." \
+        "下载的二进制文件无法在此系统上运行；未更改当前安装的版本。" \
         "The downloaded binary cannot run on this host; the installed version was not changed."
 }
 
@@ -392,8 +398,18 @@ INITIAL_ADMIN_PASSWORD=""
 bootstrap_admin() {
     local candidate="${1:-$BINARY_PATH}"
     local secret result
-    secret=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
-    [ -n "$secret" ] || die "Failed to generate a random secret." "Failed to generate a random secret."
+    if command -v od >/dev/null 2>&1; then
+        secret=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+    elif command -v hexdump >/dev/null 2>&1; then
+        secret=$(hexdump -n 16 -e '16/1 "%02x"' /dev/urandom)
+    elif command -v openssl >/dev/null 2>&1; then
+        secret=$(openssl rand -hex 16 2>/dev/null || true)
+    elif command -v sha256sum >/dev/null 2>&1; then
+        secret=$(head -c 32 /dev/urandom | sha256sum | awk '{print substr($1, 1, 32)}')
+    else
+        secret=$(tr -dc 'a-f0-9' < /dev/urandom | head -c 32)
+    fi
+    [ -n "$secret" ] || die "生成随机密钥失败。" "Failed to generate a random secret."
     result=$(printf '%s\n' "$secret" | "$candidate" bootstrap-admin --database /opt/vocat/data/vocat.db --username admin) || \
         die \
             "待安装版本无法读取或升级现有数据库；当前程序尚未被替换，请检查数据库与版本兼容性。" \
@@ -505,7 +521,7 @@ write_service() {
         write_openwrt_init
         return
     fi
-    die "Unsupported service manager." "Neither systemd nor OpenWrt procd was detected."
+    die "不支持的服务管理器。" "Neither systemd nor OpenWrt procd was detected."
 }
 
 enable_and_start() {
@@ -547,7 +563,7 @@ enable_and_start() {
             cp -a "${BINARY_PATH}.bak" "$BINARY_PATH"
             "$OPENWRT_INIT_PATH" restart || true
         fi
-        die "OpenWrt vocat service failed to start." "The OpenWrt vocat service failed to start."
+        die "OpenWrt vocat 服务启动失败。" "The OpenWrt vocat service failed to start."
     fi
     systemctl daemon-reload
     systemctl enable vocat

@@ -96,6 +96,14 @@ to install matching `ip-full`, `kmod-ipsec`, `kmod-ipsec4/6`,
 If matching kernel modules are unavailable, use a firmware that includes them;
 never force-install kmods built for a different kernel.
 
+If your kernel cannot provide XFRM/IPsec and you only need non-VoWiFi features
+such as cellular SMS or data, install with `--skip-vowifi-check`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MengMengCode/VoCat/master/scripts/install.sh -o install.sh
+sudo bash install.sh --skip-vowifi-check
+```
+
 The installer:
 
 - detects `amd64`, `386`, `arm64`, `aarch64`, or `armv7`;
@@ -188,6 +196,11 @@ those fixed nodes and does not provide complete multi-device or hot-plug discove
 
 The GHCR image is published for `linux/amd64` and `linux/arm64`.
 
+> [!TIP]
+> **NAS / QNAP Container Station Deployment Note**:
+> On NAS operating systems like QNAP QTS / QuTS hero (Container Station), custom non-root administrator accounts and volume isolation mechanisms may cause Docker named volumes (e.g. `-v vocat-data:/opt/vocat/data`) to resolve to different isolated paths between the one-off `bootstrap-admin` initialization and the daemon service container, leading to "Incorrect password" errors during Web login.
+> For NAS environments, it is strongly recommended to replace named volumes with a host absolute path bind mount (e.g. `-v /share/Container/vocat/data:/opt/vocat/data` on QNAP) for both initialization and runtime to guarantee consistent SQLite database persistence.
+
 ### USB SIM readers
 
 USB SIM readers use the Linux PC/SC service. The one-click installer installs
@@ -203,7 +216,8 @@ VoCat uses `qmicli` to verify that a QMI control channel is ready and
 `qmi-network` to manage packet-data sessions. The one-click installer installs
 and verifies the corresponding utilities automatically. For manual deployment,
 Debian/Ubuntu uses `apt install libqmi-utils`; Arch Linux uses
-`pacman -S libqmi`, and Alpine uses `apk add qmi-utils`.
+`pacman -S libqmi`, Alpine uses `apk add qmi-utils`, and OpenWrt uses
+`opkg install qmi-utils`.
 
 `vocat doctor --repair-dji-qmi` checks for `qmicli` before changing any USB
 driver binding or asserting DTR. If the utility is unavailable, the command
@@ -356,7 +370,7 @@ cd web && npm run build
 ## Thanks
 - [Nodeseek.com](https://www.nodeseek.com) — A community dedicated to servers
 - [Linux.do](https://linux.do) — An inspiring tech community
-- [iniwex5](https://github.com/iniwex5) - Style and Functionality Guidelines
+- [iniwex5](https://github.com/iniwex5) — Style and Functionality Guidelines
 
 ## Buy me a coffee
 
