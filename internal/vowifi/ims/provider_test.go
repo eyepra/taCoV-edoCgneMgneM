@@ -3,6 +3,7 @@ package ims
 import (
 	"context"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -361,6 +362,7 @@ func TestRefreshFailureRevokesRegistrationEvidence(t *testing.T) {
 
 func serveRegistration(listener *net.UDPConn, nonce string, confirmSMS bool) error {
 	var callID string
+	var pani string
 	for step := 0; step < 4; step++ {
 		packet := make([]byte, 65535)
 		count, remote, err := listener.ReadFromUDP(packet)
@@ -386,8 +388,14 @@ func serveRegistration(listener *net.UDPConn, nonce string, confirmSMS bool) err
 				)
 			}
 		}
-		if headers["p-access-network-info"] != "IEEE-802.11;i-wlan-node-id=000000000000;network-provided" {
-			return fmt.Errorf("REGISTER P-Access-Network-Info = %q", headers["p-access-network-info"])
+		currentPANI := headers["p-access-network-info"]
+		if err := validateTestPANI(currentPANI); err != nil {
+			return fmt.Errorf("REGISTER PANI: %w", err)
+		}
+		if step == 0 {
+			pani = currentPANI
+		} else if currentPANI != pani {
+			return fmt.Errorf("REGISTER PANI changed from %q to %q", pani, currentPANI)
 		}
 		if !strings.Contains(headers["allow"], "MESSAGE") ||
 			!strings.Contains(string(packet[:count]), "Accept-Contact: *;+g.3gpp.smsip") {
@@ -493,6 +501,45 @@ func serveRegistration(listener *net.UDPConn, nonce string, confirmSMS bool) err
 		); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func TestSessionPAccessNetworkInfoIsStableAndUEProvided(t *testing.T) {
+	instanceID := "urn:uuid:00000000-0000-4000-8000-000000000001"
+	first := sessionPAccessNetworkInfo(instanceID)
+	second := sessionPAccessNetworkInfo(instanceID)
+	if first != second {
+		t.Fatalf("PANI changed for one SIP instance: %q != %q", first, second)
+	}
+	if err := validateTestPANI(first); err != nil {
+		t.Fatal(err)
+	}
+	if got := ueProvidedPANI(" IEEE-802.11;i-wlan-node-id=aabbccddeeff;network-provided "); got != "IEEE-802.11;i-wlan-node-id=aabbccddeeff" {
+		t.Fatalf("ueProvidedPANI() = %q", got)
+	}
+	if got := ueProvidedPANI("network-provided"); got != "" {
+		t.Fatalf("marker-only PANI = %q, want empty", got)
+	}
+	if got := (&Session{paniResolved: true}).pAccessNetworkInfo(); got != "" {
+		t.Fatalf("explicitly omitted session PANI = %q, want empty", got)
+	}
+}
+
+func validateTestPANI(value string) error {
+	const prefix = "IEEE-802.11;i-wlan-node-id="
+	if !strings.HasPrefix(value, prefix) {
+		return fmt.Errorf("value %q does not start with %q", value, prefix)
+	}
+	if strings.Contains(strings.ToLower(value), "network-provided") {
+		return fmt.Errorf("UE PANI incorrectly claims network-provided provenance: %q", value)
+	}
+	node, err := hex.DecodeString(strings.TrimPrefix(value, prefix))
+	if err != nil || len(node) != 6 {
+		return fmt.Errorf("i-wlan-node-id must be 12 hexadecimal digits: %q", value)
+	}
+	if node[0]&0x03 != 0x02 {
+		return fmt.Errorf("i-wlan-node-id must be a locally administered unicast identifier: %q", value)
 	}
 	return nil
 }

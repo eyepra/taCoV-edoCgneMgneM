@@ -42,9 +42,12 @@ func TestImportCarrierIPCCConvertsBinaryAndXMLPlistsSafely(t *testing.T) {
 				},
 				"IMSConfig": map[string]any{
 					"EnableWiFiCallingWithoutEntitlement": true,
-					"Signaling":                           map[string]any{"UseIPSec": true},
-					"Media":                               map[string]any{"SupportPCMA": false},
-					"Emergency":                           map[string]any{"E911OverITechSupported": true},
+					"Signaling": map[string]any{
+						"UseIPSec":                   true,
+						"CountryOfOriginationFormat": "PANI",
+					},
+					"Media":     map[string]any{"SupportPCMA": false},
+					"Emergency": map[string]any{"E911OverITechSupported": true},
 				},
 			},
 		},

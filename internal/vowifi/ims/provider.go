@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -594,6 +595,8 @@ type Session struct {
 	callID             string
 	fromTag            string
 	instanceID         string
+	pani               string
+	paniResolved       bool
 	cseq               uint32
 	auth               *authenticationState
 	securityProposal   securityProposal
@@ -658,6 +661,8 @@ func newSession(
 		callID:             callToken + "@" + addressHost(connection.LocalAddr()),
 		fromTag:            fromTag,
 		instanceID:         "urn:uuid:" + instanceID,
+		pani:               resolveSessionPAccessNetworkInfo(request.Identity, "urn:uuid:"+instanceID),
+		paniResolved:       true,
 		cseq:               1,
 		refreshContext:     refreshContext,
 		refreshCancel:      refreshCancel,
@@ -991,19 +996,16 @@ func (session *Session) buildRegister(
 	}
 	lines = append(lines, "User-Agent: "+userAgent)
 
-	defaultPANI := "IEEE-802.11;i-wlan-node-id=000000000000;network-provided"
-	pani := defaultPANI
-	if registerOptions.PAccessNetworkInfo != nil {
-		pani = *registerOptions.PAccessNetworkInfo
-	}
-
 	if registerOptions.PPreferredIdentity {
 		lines = append(lines, "P-Preferred-Identity: <"+session.identity.public+">")
 	}
 	if value := strings.TrimSpace(registerOptions.PVisitedNetworkID); value != "" {
 		lines = append(lines, `P-Visited-Network-ID: "`+value+`"`)
 	}
-	if pani != "" {
+	// PANI describes this UE's access and is stable for the complete IMS
+	// session. The same UE-provided value is used by REGISTER, MESSAGE,
+	// RP-ACK and dialog requests; it never claims to be network-provided.
+	if pani := session.pAccessNetworkInfo(); pani != "" {
 		lines = append(lines, "P-Access-Network-Info: "+pani)
 	}
 	if value := strings.TrimSpace(registerOptions.CellularNetworkInfo); value != "" {
@@ -1072,6 +1074,58 @@ func (session *Session) buildContact(contactAddress string, registerOptions vowi
 			base, instanceID, icsiRef, extra,
 		)
 	}
+}
+
+// sessionPAccessNetworkInfo creates a syntactically valid, locally
+// administered unicast WLAN node identifier from the already-random SIP
+// instance ID. It discloses neither a real BSSID nor subscriber identity, but
+// remains stable for every transaction belonging to this IMS registration.
+func sessionPAccessNetworkInfo(instanceID string) string {
+	instanceID = strings.TrimSpace(instanceID)
+	if instanceID == "" {
+		return ""
+	}
+	digest := sha256.Sum256([]byte(instanceID))
+	digest[0] = (digest[0] | 0x02) & 0xfe // locally administered, unicast
+	return "IEEE-802.11;i-wlan-node-id=" + hex.EncodeToString(digest[:6])
+}
+
+// resolveSessionPAccessNetworkInfo freezes the selected value when the IMS
+// session is created. This prevents a carrier-profile reload from changing
+// access identity between REGISTER, SMS MESSAGE and its RP-ACK.
+func resolveSessionPAccessNetworkInfo(identity vowifi.SIMIdentity, instanceID string) string {
+	profile := vowifi.ResolveCarrierProfile(identity)
+	if configured := profile.IMSRegisterOptions.PAccessNetworkInfo; configured != nil {
+		return ueProvidedPANI(*configured)
+	}
+
+	node := strings.ToLower(strings.TrimSpace(profile.PANINode))
+	if decoded, err := hex.DecodeString(node); err != nil || len(decoded) != 6 {
+		node = strings.TrimPrefix(sessionPAccessNetworkInfo(instanceID), "IEEE-802.11;i-wlan-node-id=")
+	}
+	if node == "" {
+		return ""
+	}
+	value := "IEEE-802.11;i-wlan-node-id=" + node
+	if country := strings.ToUpper(strings.TrimSpace(profile.PANICountry)); country != "" {
+		value += ";country=" + country
+	}
+	return value
+}
+
+// ueProvidedPANI removes the network-provided marker from a profile override.
+// RFC 7315 reserves that marker for a trusted proxy; a UE must not assert it.
+func ueProvidedPANI(value string) string {
+	parts := strings.Split(strings.TrimSpace(value), ";")
+	filtered := parts[:0]
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" || strings.EqualFold(part, "network-provided") {
+			continue
+		}
+		filtered = append(filtered, part)
+	}
+	return strings.Join(filtered, ";")
 }
 
 func (session *Session) exchange(ctx context.Context, request []byte, cseq uint32) (*sipResponse, error) {
