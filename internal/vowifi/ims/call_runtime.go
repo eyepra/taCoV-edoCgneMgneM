@@ -115,8 +115,10 @@ func (session *Session) DialCall(ctx context.Context, number string) (vowifi.Cal
 		"P-Preferred-Identity: <"+preferredIdentity+">",
 		"P-Preferred-Service: "+mmtelServiceURN,
 		`Accept-Contact: *;+g.3gpp.icsi-ref="`+mmtelFeatureTag+`"`,
-		"P-Access-Network-Info: "+session.pAccessNetworkInfo(),
-		"User-Agent: "+session.callUserAgent(),
+	)
+	lines = session.appendPAccessNetworkInfoHeader(lines)
+	lines = append(lines,
+		"User-Agent: "+session.imsUserAgent(),
 		"Allow: INVITE, ACK, CANCEL, BYE, OPTIONS, MESSAGE, PRACK, UPDATE, INFO",
 		"Supported: 100rel, timer, replaces",
 		"Session-Expires: 1800;refresher=uac",
@@ -499,8 +501,10 @@ func (session *Session) sendRejectedInviteACK(call *imsCall, response *sipRespon
 		"To: "+to,
 		"Call-ID: "+call.callID,
 		fmt.Sprintf("CSeq: %d ACK", call.cseq),
-		"P-Access-Network-Info: "+session.pAccessNetworkInfo(),
-		"User-Agent: "+session.callUserAgent(),
+	)
+	lines = session.appendPAccessNetworkInfoHeader(lines)
+	lines = append(lines,
+		"User-Agent: "+session.imsUserAgent(),
 		"Content-Length: 0", "", "",
 	)
 	session.writeMu.Lock()
@@ -577,8 +581,10 @@ func (session *Session) sendPRACK(call *imsCall, response *sipResponse) {
 	lines = append(lines,
 		"From: "+from, "To: "+to, "Call-ID: "+call.callID,
 		fmt.Sprintf("CSeq: %d PRACK", cseq), "RAck: "+rseq+" "+inviteCSeq,
-		"P-Access-Network-Info: "+session.pAccessNetworkInfo(),
-		"User-Agent: "+session.callUserAgent(),
+	)
+	lines = session.appendPAccessNetworkInfoHeader(lines)
+	lines = append(lines,
+		"User-Agent: "+session.imsUserAgent(),
 		"Content-Length: 0", "", "",
 	)
 	ctx, cancel := context.WithTimeout(session.refreshContext, 10*time.Second)
@@ -709,10 +715,10 @@ func (session *Session) buildDialogRequest(call *imsCall, method string, cseq ui
 		"Call-ID: "+call.callID,
 		fmt.Sprintf("CSeq: %d %s", cseq, method),
 		"Supported: 100rel, timer",
-		"User-Agent: "+session.callUserAgent(),
+		"User-Agent: "+session.imsUserAgent(),
 	)
 	if method != "CANCEL" {
-		lines = append(lines, "P-Access-Network-Info: "+session.pAccessNetworkInfo())
+		lines = session.appendPAccessNetworkInfoHeader(lines)
 	}
 	if method == "UPDATE" {
 		lines = append(lines, session.dialogContactHeader())
@@ -771,6 +777,13 @@ func (session *Session) dialogContactHeader() string {
 	if session == nil || session.conn == nil || strings.TrimSpace(session.identity.user) == "" {
 		return ""
 	}
+	if session.imsRegisterOptions().ContactFormat == vowifi.IMSContactFormatGSMA {
+		contact := "Contact: <sip:" + session.contactAddress() + `>;+g.3gpp.icsi-ref="` + mmtelFeatureTag + `"`
+		if strings.TrimSpace(session.instanceID) != "" {
+			contact += `;+sip.instance="<` + session.instanceID + `>"`
+		}
+		return contact
+	}
 	contact := "Contact: <sip:" + session.identity.user + "@" + session.contactAddress() + ";transport=" + session.transport + ">"
 	if strings.TrimSpace(session.instanceID) != "" {
 		contact += `;+sip.instance="<` + session.instanceID + `>"`
@@ -811,19 +824,20 @@ func (session *Session) callOriginatingIdentitiesLocked(profile vowifi.CarrierPr
 }
 
 func (session *Session) pAccessNetworkInfo() string {
-	if session.paniResolved {
-		return ueProvidedPANI(session.pani)
+	if session == nil {
+		return ""
 	}
-	return sessionPAccessNetworkInfo(session.instanceID)
+	if session.paniResolved {
+		return session.pani
+	}
+	return resolveSessionPAccessNetworkInfo(session.request.Identity, session.imsLogger())
 }
 
-func (session *Session) callUserAgent() string {
-	if session != nil && session.provider != nil {
-		if value := strings.TrimSpace(session.provider.config.UserAgent); value != "" {
-			return value
-		}
+func (session *Session) appendPAccessNetworkInfoHeader(lines []string) []string {
+	if pani := session.pAccessNetworkInfo(); pani != "" {
+		return append(lines, "P-Access-Network-Info: "+pani)
 	}
-	return "vocat/1"
+	return lines
 }
 
 func callResponseDiagnostic(response *sipResponse) string {
