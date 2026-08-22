@@ -242,10 +242,6 @@ func (s *Server) handleSMSSend(w http.ResponseWriter, r *http.Request) {
 		s.writeStoreError(w, err)
 		return
 	}
-	if store.NormalizeDeviceType(config.DeviceType) == store.DeviceTypeWiFi410 {
-		writeError(w, http.StatusNotImplemented, "device_feature_unsupported", "SMS is not supported by the native OpenStick 410 backend")
-		return
-	}
 	entry, physicalID, present := s.physicalForConfig(config)
 	if !s.requirePhysicalDevice(w, present) {
 		return
@@ -291,6 +287,9 @@ func (s *Server) handleSMSSend(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// Prefer VoWiFi IMS when it is ready. If IMS is unavailable, including on a
+	// native OpenStick 410 registered on a roaming cellular network, use the
+	// modem's discovered auxiliary AT port and the existing AT+CMGS path.
 	result, sendErr := s.devices.SendSMS(
 		r.Context(),
 		physicalID,
