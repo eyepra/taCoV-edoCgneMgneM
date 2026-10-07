@@ -449,6 +449,42 @@ func TestEuiccSASTrimsCardPadding(t *testing.T) {
 	}
 }
 
+func TestOpenEuiccGETResponsePreservesTransportError(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		cause error
+	}{
+		{name: "transient_CME", cause: &modem.CommandError{Command: `AT+CSIM=10,"81C0000010"`, Final: "+CME ERROR: 0"}},
+		{name: "timeout", cause: modem.ErrCommandTimeout},
+		{name: "canceled", cause: context.Canceled},
+		{name: "deadline", cause: context.DeadlineExceeded},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := &transcriptClient{steps: []clientStep{
+				{command: `AT+CSIM=10,"0070000001"`, response: okResponse(`+CSIM: 6,"019000"`)},
+				{command: fmt.Sprintf(`AT+CSIM=42,"01A4040010%s"`, isdRAID), response: okResponse(`+CSIM: 4,"6110"`)},
+				{command: `AT+CSIM=10,"81C0000010"`, err: test.cause},
+				{command: `AT+CSIM=10,"0070800100"`, response: okResponse(`+CSIM: 4,"9000"`)},
+			}}
+			manager, id := newStartedTestManager(t, client)
+			channel, err := manager.openEuiccOnceAID(context.Background(), id, isdRAID)
+			if channel != nil || !errors.Is(err, test.cause) {
+				t.Fatalf("open eUICC = %v, %v; want original transport error %v", channel, err, test.cause)
+			}
+			if errors.Is(err, errNoEUICC) {
+				t.Fatalf("transport error must not indicate absent eUICC: %v", err)
+			}
+			if !strings.Contains(err.Error(), "GET RESPONSE AID="+isdRAID) {
+				t.Fatalf("transport error lost the SELECT AID context: %v", err)
+			}
+			if isTransientEuiccCME(err) != isTransientEuiccCME(test.cause) {
+				t.Fatalf("transport error changed transient CME classification: %v", err)
+			}
+			client.assertDone(t)
+		})
+	}
+}
+
 func TestTransientEuiccCMEClassification(t *testing.T) {
 	err := fmt.Errorf("select ISD-R: %w", &modem.CommandError{
 		Command: `AT+CSIM=42,"01A40400"`,
@@ -588,11 +624,11 @@ func TestOpenEuiccRecoversOrphanedSingleLogicalChannel(t *testing.T) {
 }
 
 func TestWaitForESIMRecovery(t *testing.T) {
-	done := make(chan struct{})
-	manager := &Manager{esimRecoveries: map[string]chan struct{}{"dev": done}}
+	done := &esimRecovery{done: make(chan struct{})}
+	manager := &Manager{esimRecoveries: map[string]*esimRecovery{"dev": done}}
 	go func() {
 		time.Sleep(10 * time.Millisecond)
-		close(done)
+		close(done.done)
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -600,7 +636,7 @@ func TestWaitForESIMRecovery(t *testing.T) {
 		t.Fatalf("waitForESIMRecovery: %v", err)
 	}
 
-	blocked := make(chan struct{})
+	blocked := &esimRecovery{done: make(chan struct{})}
 	manager.esimRecoveries["blocked"] = blocked
 	timeoutContext, cancelTimeout := context.WithTimeout(context.Background(), time.Millisecond)
 	defer cancelTimeout()
@@ -610,9 +646,9 @@ func TestWaitForESIMRecovery(t *testing.T) {
 }
 
 func TestESIMListProfilesReturnsCacheDuringRecovery(t *testing.T) {
-	done := make(chan struct{})
+	done := &esimRecovery{done: make(chan struct{})}
 	manager := &Manager{
-		esimRecoveries: map[string]chan struct{}{"dev": done},
+		esimRecoveries: map[string]*esimRecovery{"dev": done},
 		esimCache: map[string]EsimInfo{
 			"dev": {Profiles: []EsimProfile{{ICCID: "old", State: 1}}},
 		},

@@ -194,6 +194,31 @@ func TestManualModemRebootInvalidatesConnectedDataRuntime(t *testing.T) {
 	}
 }
 
+func TestWriteDeviceErrorExplainsRFOffRestart(t *testing.T) {
+	t.Parallel()
+	server := &Server{logger: regionTestLogger()}
+	for _, cause := range []error{
+		device.ErrRFOffRestart,
+		errors.Join(errors.New("defer MBN selection requiring online restart"), device.ErrRFOffRestart),
+	} {
+		recorder := httptest.NewRecorder()
+		server.writeDeviceError(recorder, cause)
+		if recorder.Code != http.StatusConflict {
+			t.Fatalf("status = %d, want 409; body = %s", recorder.Code, recorder.Body)
+		}
+		var envelope errorEnvelope
+		if err := json.NewDecoder(recorder.Body).Decode(&envelope); err != nil {
+			t.Fatal(err)
+		}
+		if envelope.Error.Code != "rf_off_restart_blocked" {
+			t.Fatalf("error code = %q, want rf_off_restart_blocked", envelope.Error.Code)
+		}
+		if !strings.Contains(envelope.Error.Message, "enable cellular RF") {
+			t.Fatalf("error does not explain the RF consequence: %q", envelope.Error.Message)
+		}
+	}
+}
+
 type esimAIDCaptureController struct {
 	fakeDeviceController
 	switchAID  string
@@ -232,6 +257,13 @@ func (c *flightTrackingController) ESIMSwitchProfile(_ context.Context, _, _, _ 
 func (c *flightTrackingController) SetFlight(_ context.Context, _ string, enable bool) (device.FlightResult, error) {
 	c.lastFlightState = enable
 	return device.FlightResult{}, nil
+}
+
+func (c *flightTrackingController) Refresh(context.Context, string) (device.Snapshot, error) {
+	if c.entry.Snapshot != nil {
+		return *c.entry.Snapshot, nil
+	}
+	return device.Snapshot{}, nil
 }
 
 type fakeEsimVoWiFiController struct {
@@ -691,9 +723,16 @@ func TestHandleESIMShapes(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := failDatabaseCellular.UpsertCardPolicy(context.Background(), store.CardPolicy{
+		ICCID: "8900000000000000003", AirplaneEnabled: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	flightRecorderCellular := &flightTrackingController{
-		fakeDeviceController: fakeDeviceController{entry: device.Device{ID: "devCellular"}},
-		switchErr:            device.ErrESIMCommandError,
+		fakeDeviceController: fakeDeviceController{entry: device.Device{
+			ID: "devCellular", Snapshot: &device.Snapshot{ICCID: "8900000000000000003"},
+		}},
+		switchErr: device.ErrESIMCommandError,
 	}
 	failServerCellular := &Server{
 		store:               failDatabaseCellular,
